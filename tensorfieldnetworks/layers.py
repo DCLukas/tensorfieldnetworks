@@ -1,13 +1,20 @@
 from math import sqrt
 import tensorflow as tf
 import numpy as np
+import tensorfieldnetworks as tfn
 from tensorfieldnetworks import utils
-from utils import FLOAT_TYPE, EPSILON
+from tensorfieldnetworks.utils import FLOAT_TYPE, EPSILON
 
 # Layers for 3D rotation-equivariant network.
 
-
 def R(inputs, nonlin=tf.nn.relu, hidden_dim=None, output_dim=1, weights_initializer=None, biases_initializer=None):
+    """
+    Learned function for filter, containing most of the parameters within a tensor field network
+
+    Returns:
+        [N, N, output_dim]
+    """
+
     with tf.variable_scope(None, "radial_function", values=[inputs]):
         if weights_initializer is None:
             weights_initializer = tf.contrib.layers.xavier_initializer()
@@ -28,7 +35,6 @@ def R(inputs, nonlin=tf.nn.relu, hidden_dim=None, output_dim=1, weights_initiali
         hidden_layer = nonlin(b1 + tf.tensordot(inputs, w1, [[2], [1]]))
         radial = b2 + tf.tensordot(hidden_layer, w2, [[2], [1]])
 
-        # [N, N, output_dim]
         return radial
 
 
@@ -37,16 +43,23 @@ def unit_vectors(v, axis=-1):
 
 
 def Y_2(rij):
-    # rij : [N, N, 3]
-    # x, y, z : [N, N]
+    """
+    Args:
+        rij : [N, N, 3]
+        output_dim: TODO
+
+    Returns:
+        [N, N, 5]
+    """
+
     x = rij[:, :, 0]
     y = rij[:, :, 1]
     z = rij[:, :, 2]
     r2 = tf.maximum(tf.reduce_sum(tf.square(rij), axis=-1), EPSILON)
-    # return : [N, N, 5]
+
     output = tf.stack([x * y / r2,
                        y * z / r2,
-                       (-tf.square(x) - tf.square(y) + 2. * tf.square(z)) / (2 * sqrt(3) * r2),
+                       (tf.negative(tf.square(x)) - tf.square(y) + 2. * tf.square(z)) / (2 * sqrt(3) * r2),
                        z * x / r2,
                        (tf.square(x) - tf.square(y)) / (2. * r2)],
                       axis=-1)
@@ -55,7 +68,11 @@ def Y_2(rij):
 
 def F_0(inputs, nonlin=tf.nn.relu, hidden_dim=None, output_dim=1,
         weights_initializer=None, biases_initializer=None):
-    # [N, N, output_dim, 1]
+    """
+    Args:
+        inputs: [N, N, output_dtim, 1]
+    """
+
     with tf.variable_scope(None, "F_0", values=[inputs]):
         return tf.expand_dims(
             R(inputs, nonlin=nonlin, hidden_dim=hidden_dim, output_dim=output_dim,
@@ -65,44 +82,53 @@ def F_0(inputs, nonlin=tf.nn.relu, hidden_dim=None, output_dim=1,
 
 def F_1(inputs, rij, nonlin=tf.nn.relu, hidden_dim=None, output_dim=1,
         weights_initializer=None, biases_initializer=None):
+    """
+    Args:
+        inputs: [N, N, output_dim]
+        rij: TODO
+    """
+
     with tf.variable_scope(None, "F_1", values=[inputs]):
-        # [N, N, output_dim]
         radial = R(inputs, nonlin=nonlin, hidden_dim=hidden_dim, output_dim=output_dim,
                    weights_initializer=weights_initializer, biases_initializer=biases_initializer)
         # Mask out for dij = 0
         dij = tf.norm(rij, axis=-1)
         condition = tf.tile(tf.expand_dims(dij < EPSILON, axis=-1), [1, 1, output_dim])
-        masked_radial = tf.where(condition, tf.zeros_like(radial), radial)
-        # [N, N, output_dim, 3]
+        masked_radial = tf.where(condition, tf.zeros_like(radial), radial) #[N, N, output_dim, 3]
         return tf.expand_dims(unit_vectors(rij), axis=-2) * tf.expand_dims(masked_radial, axis=-1)
 
 
 def F_2(inputs, rij, nonlin=tf.nn.relu, hidden_dim=None, output_dim=1,
         weights_initializer=None, biases_initializer=None):
+    """
+    Args:
+        inputs: [N, N, output_dim]
+        rij: TODO
+    """
+
     with tf.variable_scope(None, "F_2", values=[inputs]):
-        # [N, N, output_dim]
         radial = R(inputs, nonlin=nonlin, hidden_dim=hidden_dim, output_dim=output_dim,
                    weights_initializer=weights_initializer, biases_initializer=biases_initializer)
         # Mask out for dij = 0
         dij = tf.norm(rij, axis=-1)
         condition = tf.tile(tf.expand_dims(dij < EPSILON, axis=-1), [1, 1, output_dim])
-        masked_radial = tf.where(condition, tf.zeros_like(radial), radial)
-        # [N, N, output_dim, 5]
+        masked_radial = tf.where(condition, tf.zeros_like(radial), radial) #[N, N, output_dim, 5]
         return tf.expand_dims(Y_2(rij), axis=-2) * tf.expand_dims(masked_radial, axis=-1)
 
 
-def filter_0(layer_input,
-             rbf_inputs,
-             nonlin=tf.nn.relu,
-             hidden_dim=None,
-             output_dim=1,
-             weights_initializer=None,
-             biases_initializer=None):
+def filter_0(layer_input, rbf_inputs, nonlin=tf.nn.relu, hidden_dim=None, output_dim=1,
+             weights_initializer=None, biases_initializer=None):
+    """
+    Args:
+        layer_input: [N, N, output_dim, 1]
+        rbf_inputs: TODO
+        rij: TODO
+    """
+
     with tf.variable_scope(None, "F0_to_L", values=[layer_input]):
-        # [N, N, output_dim, 1]
         F_0_out = F_0(rbf_inputs, nonlin=nonlin, hidden_dim=hidden_dim, output_dim=output_dim,
                       weights_initializer=weights_initializer, biases_initializer=biases_initializer)
-        # [N, output_dim]
+                      #[N, output_dim]
         input_dim = layer_input.get_shape().as_list()[-1]
         # Expand filter axis "j"
         cg = tf.expand_dims(tf.eye(input_dim), axis=-2)
@@ -110,24 +136,19 @@ def filter_0(layer_input,
         return tf.einsum('ijk,abfj,bfk->afi', cg, F_0_out, layer_input)
 
 
-def filter_1_output_0(layer_input,
-                      rbf_inputs,
-                      rij,
-                      nonlin=tf.nn.relu,
-                      hidden_dim=None,
-                      output_dim=1,
-                      weights_initializer=None,
-                      biases_initializer=None):
+def filter_1_output_0(layer_input, rbf_inputs, rij, nonlin=tf.nn.relu, hidden_dim=None, output_dim=1,
+                      weights_initializer=None, biases_initializer=None):
+    """
+    Args:
+        layer_input: [N, N, output_dim, 3]
+        rbf_inputs: TODO
+        rij: TODO
+    """
+
     with tf.variable_scope(None, "F1_to_0", values=[layer_input]):
-        # [N, N, output_dim, 3]
-        F_1_out = F_1(rbf_inputs,
-                      rij,
-                      nonlin=nonlin,
-                      hidden_dim=hidden_dim,
-                      output_dim=output_dim,
-                      weights_initializer=weights_initializer,
-                      biases_initializer=biases_initializer)
-        # [N, output_dim, 3]
+        F_1_out = F_1(rbf_inputs, rij, nonlin=nonlin, hidden_dim=hidden_dim, output_dim=output_dim,
+                      weights_initializer=weights_initializer, biases_initializer=biases_initializer)
+                      #[N, output_dim, 3]
         if layer_input.get_shape().as_list()[-1] == 1:
             raise ValueError("0 x 1 cannot yield 0")
         elif layer_input.get_shape().as_list()[-1] == 3:
@@ -138,24 +159,19 @@ def filter_1_output_0(layer_input,
             raise NotImplementedError("Other Ls not implemented")
 
 
-def filter_1_output_1(layer_input,
-                      rbf_inputs,
-                      rij,
-                      nonlin=tf.nn.relu,
-                      hidden_dim=None,
-                      output_dim=1,
-                      weights_initializer=None,
-                      biases_initializer=None):
+def filter_1_output_1(layer_input, rbf_inputs, rij, nonlin=tf.nn.relu, hidden_dim=None, output_dim=1,
+                      weights_initializer=None, biases_initializer=None):
+    """
+    Args:
+        layer_input: [N, N, output_dim, 3]
+        rbf_inputs: TODO
+        rij: TODO
+    """
+
     with tf.variable_scope(None, "F1_to_1", values=[layer_input]):
-        # [N, N, output_dim, 3]
-        F_1_out = F_1(rbf_inputs,
-                      rij,
-                      nonlin=nonlin,
-                      hidden_dim=hidden_dim,
-                      output_dim=output_dim,
-                      weights_initializer=weights_initializer,
-                      biases_initializer=biases_initializer)
-        # [N, output_dim, 3]
+        F_1_out = F_1(rbf_inputs, rij, nonlin=nonlin, hidden_dim=hidden_dim, output_dim=output_dim,
+                      weights_initializer=weights_initializer, biases_initializer=biases_initializer)
+                      # [N, output_dim, 3]
         if layer_input.get_shape().as_list()[-1] == 1:
             # 0 x 1 -> 1
             cg = tf.expand_dims(tf.eye(3), axis=-1)
@@ -167,24 +183,19 @@ def filter_1_output_1(layer_input,
             raise NotImplementedError("Other Ls not implemented")
 
 
-def filter_2_output_2(layer_input,
-                      rbf_inputs,
-                      rij,
-                      nonlin=tf.nn.relu,
-                      hidden_dim=None,
-                      output_dim=1,
-                      weights_initializer=None,
-                      biases_initializer=None):
+def filter_2_output_2(layer_input, rbf_inputs, rij, nonlin=tf.nn.relu, hidden_dim=None, output_dim=1,
+                      weights_initializer=None, biases_initializer=None):
+    """
+    Args:
+        layer_input: [N, N, output_dim, 3]
+        rbf_inputs: TODO
+        rij: TODO
+    """
+
     with tf.variable_scope(None, "F2_to_2", values=[layer_input]):
-        # [N, N, output_dim, 3]
-        F_2_out = F_2(rbf_inputs,
-                      rij,
-                      nonlin=nonlin,
-                      hidden_dim=hidden_dim,
-                      output_dim=output_dim,
-                      weights_initializer=weights_initializer,
-                      biases_initializer=biases_initializer)
-        # [N, output_dim, 5]
+        F_2_out = F_2(rbf_inputs, rij, nonlin=nonlin, hidden_dim=hidden_dim, output_dim=output_dim,
+                      weights_initializer=weights_initializer, biases_initializer=biases_initializer)
+                      # [N, output_dim, 5]
         if layer_input.get_shape().as_list()[-1] == 1:
             # 0 x 2 -> 2
             cg = tf.expand_dims(tf.eye(5), axis=-1)
@@ -193,40 +204,34 @@ def filter_2_output_2(layer_input,
             raise NotImplementedError("Other Ls not implemented")
 
 
-def self_interaction_layer_without_biases(inputs, output_dim, weights_initializer=None, biases_initializer=None):
-    # input has shape [N, C, 2L+1]
-    # input_dim is number of channels
-    if weights_initializer is None:
-        weights_initializer = tf.orthogonal_initializer()
-    if biases_initializer is None:
-        biases_initializer = tf.constant_initializer(0.)
+def self_interaction_layer(inputs, output_dim, weights_initializer=None, biases_initializer=None, biases=False):
+    """
+    Self-interaction layers are analogous to 1x1 convolutions, and act like l=0 (scalar) filters
 
+    Args:
+        inputs: has shape [N, C, 2L+1]
+        output_dim: TODO
+
+    Returns:
+        [N, output_dim, 2l+1]
+    """
+   
     with tf.variable_scope(None, "self_interaction_layer", values=[inputs]):
-        input_dim = inputs.get_shape().as_list()[-2]
+        input_dim = inputs.get_shape().as_list()[-2] # number of channels
+
+        if weights_initializer is None:
+            weights_initializer = tf.orthogonal_initializer()
         w_si = tf.get_variable('weights', [output_dim, input_dim], dtype=FLOAT_TYPE,
                                initializer=weights_initializer)
-        # [N, output_dim, 2l+1]
-        return tf.transpose(tf.einsum('afi,gf->aig', inputs, w_si), perm=[0, 2, 1])
-
-
-def self_interaction_layer_with_biases(inputs, output_dim, weights_initializer=None, biases_initializer=None):
-    # input has shape [N, C, 2L+1]
-    # input_dim is number of channels
-    if weights_initializer is None:
-        weights_initializer = tf.orthogonal_initializer()
-    if biases_initializer is None:
-        biases_initializer = tf.constant_initializer(0.)
-
-    with tf.variable_scope(None, "self_interaction_layer", values=[inputs]):
-        input_dim = inputs.get_shape().as_list()[-2]
-        w_si = tf.get_variable('weights', [output_dim, input_dim], dtype=FLOAT_TYPE,
-                               initializer=weights_initializer)
-        b_si = tf.get_variable('biases', [output_dim], initializer=biases_initializer,
-                               dtype=FLOAT_TYPE)
-
-        # [N, output_dim, 2l+1]
-        return tf.transpose(tf.einsum('afi,gf->aig', inputs, w_si) + b_si, perm=[0, 2, 1])
-
+        if biases:
+            if biases_initializer is None:
+                biases_initializer = tf.constant_initializer(0.)
+            b_si = tf.get_variable('biases', [output_dim], initializer=biases_initializer, dtype=FLOAT_TYPE)
+            output = tf.einsum('afi,gf->aig', inputs, w_si) + b_si
+        else:
+            output = tf.einsum('afi,gf->aig', inputs, w_si)
+        
+        return tf.transpose(output, perm=[0, 2, 1])
 
 def convolution(input_tensor_list, rbf, unit_vectors, weights_initializer=None, biases_initializer=None):
     with tf.variable_scope(None, "convolution", values=[input_tensor_list]):
@@ -279,17 +284,12 @@ def self_interaction(input_tensor_list, output_dim, weights_initializer=None, bi
             with tf.variable_scope(None, "L" + str(key), values=input_tensor_list[key]):
                 for i, tensor in enumerate(input_tensor_list[key]):
                     with tf.variable_scope(None, 'tensor_' + str(i), values=[tensor]):
-                        if key == 0:
-                            tensor_out = self_interaction_layer_with_biases(tensor,
-                                                                            output_dim,
-                                                                            weights_initializer=weights_initializer,
-                                                                            biases_initializer=biases_initializer)
+                        use_bias = (key == 0)
+                        tensor_out = self_interaction_layer(tensor, output_dim, weights_initializer=weights_initializer, biases_initializer=biases_initializer, biases=use_bias)
+                        if tensor_out.get_shape().as_list()[-1] == 1:
+                            m = 0
                         else:
-                            tensor_out = self_interaction_layer_without_biases(tensor,
-                                                                               output_dim,
-                                                                               weights_initializer=weights_initializer,
-                                                                               biases_initializer=biases_initializer)
-                        m = 0 if tensor_out.get_shape().as_list()[-1] == 1 else 1
+                            m = 1
                         output_tensor_list[m].append(tensor_out)
         return output_tensor_list
 
@@ -301,15 +301,11 @@ def nonlinearity(input_tensor_list, nonlin=tf.nn.elu, biases_initializer=None):
             with tf.variable_scope(None, "L" + str(key), values=input_tensor_list[key]):
                 for i, tensor in enumerate(input_tensor_list[key]):
                     with tf.variable_scope(None, 'tensor_' + str(i), values=[tensor]):
-                        if key == 0:
-                            tensor_out = utils.rotation_equivariant_nonlinearity(tensor,
-                                                                                 nonlin=nonlin,
-                                                                                 biases_initializer=biases_initializer)
+                        tensor_out = utils.rotation_equivariant_nonlinearity(tensor, nonlin=nonlin, biases_initializer=biases_initializer)
+                        if tensor_out.get_shape().as_list()[-1] == 1:
+                            m = 0
                         else:
-                            tensor_out = utils.rotation_equivariant_nonlinearity(tensor,
-                                                                                 nonlin=nonlin,
-                                                                                 biases_initializer=biases_initializer)
-                        m = 0 if tensor_out.get_shape().as_list()[-1] == 1 else 1
+                            m = 1
                         output_tensor_list[m].append(tensor_out)
         return output_tensor_list
 
